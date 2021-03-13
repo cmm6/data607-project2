@@ -1,0 +1,274 @@
+---
+title: "Data 607 Project 2"
+author: "Claire Meyer"
+date: "3/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Transformation
+
+This project takes 3 different data sets and transforms them into a more workable structure, which is then written to CSVs. I've also completed lighweight analysis of each data set, to answer an initial driving question or hypothesis. Included datasets are: 
+
+1. Top Movies on iMDB
+2. NYC Squirrel Observations
+3. Sanitation Inspection Results of Restaurants
+
+```{r libraries, echo=FALSE}
+library(tidyverse)
+#install.packages("rvest")
+library(rvest)
+# install.packages("jsonlite")
+library(jsonlite)
+library(RCurl)
+```
+
+## Top Movies on IMDB
+
+IMDB (Internet Movie Database) creates rankings of movies, presumably based on user scores. The code below reads in data from one such ranking: all time 250 movies. 
+
+Reviewing this table initially, I wanted to understand if and how age of a film played into the rank, with the hypothesis being older movies fared better, as they are more likely to accrue strong rating over time. 
+
+*Citation:* “IMDb Top Rated Movies.” IMDb, IMDb.com, www.imdb.com/chart/top/?ref_=nv_mv_250. 
+
+```{r movie data prep, echo=FALSE}
+webpage <- read_html("https://www.imdb.com/chart/top/?ref_=nv_mv_250")
+webpage
+
+# https://www.dataquest.io/blog/web-scraping-in-r-rvest/
+title_column <- webpage %>% html_nodes(".titleColumn") %>% html_text()
+title_column
+
+rating_column <- webpage %>% html_nodes(".ratingColumn") %>% html_text()
+rating_column
+
+movie_data <- data.frame(matrix(unlist(title_column), nrow=250, byrow=TRUE),stringsAsFactors=FALSE)
+colnames(movie_data) <- c("all")
+rating_data <- data.frame(matrix(unlist(rating_column), nrow=250, byrow=TRUE),stringsAsFactors=FALSE)
+colnames(rating_data) <- c("rating")
+movie_data$rating <- as.numeric(rating_data$rating)
+
+# Tidying
+movie_data <- movie_data %>%
+  separate(all,c("text","year"),sep = "\\(") %>%
+  separate(text,c("rank","title"),sep = "\\.")
+
+movie_data$rank <- as.numeric(movie_data$rank)
+movie_data$year <- as.numeric(str_extract_all(movie_data$year,"\\d+"))
+
+# Write to CSV
+write.csv(movie_data,'imdb_top250.csv',row.names = TRUE)
+```
+
+Now we can compare age of movie, rank, and rating. I had a hypothesis there may be some reverse recency bias, where older movies overall ranked higher. Doing a quick scatterplot, there's not a clear overwhelming trend.
+
+```{r movie scatterplot}
+ggplot(data=movie_data,aes(rank,year)) + geom_point(aes(color=rating))
+```
+Let's make this data a little more decipherable by adding some buckets around year and rank.
+
+```{r movie bar}
+# to create some buckets, I'm adding a 'decade' field
+movie_data <- movie_data %>%
+  mutate(decade = year - (year %% 10))
+
+# and bucketing ranking into groups of 50
+movie_data <- movie_data %>%
+  mutate(rank_50 = rank - (rank %% 50))
+```
+
+We can compare the distribution of decades in histograms. From this we can see that the top tier (0 bucket) has a higher number of movies in the 90s and 2000s, suggesting there isn't reverse recency bias, but perhaps a true recency bias. 
+
+```{r movie rank-rating-bucket}
+ggplot(data = movie_data, aes(x = decade)) +
+  geom_histogram() + facet_wrap(~rank_50)
+```
+
+## NYC Squirrels
+
+Joseph Connolly shared this: 
+
+> On the City of New York's website, there is a fantastic dataset about squirrels in Central Park.   From this, I can tidy it to perform an analysis on how squirrels in the big city live. From here, I can break down the demographics and possibly mimic the 2019 Squirrel Report with an October 2018 version, as the dataset indicates these observations took place during that time.
+
+The data is available for download in CSV format, which I've made available on Github. 
+
+*Citation:* “2018 Central Park Squirrel Census - Squirrel Data.” NYC Open Data, data.cityofnewyork.us/Environment/2018-Central-Park-Squirrel-Census-Squirrel-Data/vfnx-vebw/data. 
+
+First, we read in the CSV.  
+
+```{r squirrels}
+x <- getURL("http://raw.githubusercontent.com/cmm6/data607-project2/main/squirrel_census.csv",.opts=curlOptions(followlocation = TRUE)) 
+squirrels <- read.csv(text = x, header=TRUE)
+```
+
+Then we can begin constructing a more useful dataset. First, I want to drop some columns without clear value and focus on Squirrel demographics per the prompt. I'm also curious about Squirrel actions, so I'll include that separately.
+
+```{r squirrel tidying}
+head(squirrels)
+
+squirrels_wide <- squirrels %>%
+  select(Unique.Squirrel.ID, Hectare, Age, Primary.Fur.Color, Highlight.Fur.Color,
+         Location, Running, Chasing, Climbing, Eating, Foraging
+         ) 
+
+colnames(squirrels_wide) <- c('id', 'hectare', 'age', 'primary_color', 'highlight_color', 'location', 'Running', 'Chasing', 'Climbing', 'Eating', 'Foraging')
+
+# Clean up true and false to numeric values: https://stackoverflow.com/questions/14737773/replacing-occurrences-of-a-number-in-multiple-columns-of-data-frame-with-another
+squirrels_wide[squirrels_wide == "true" ] <- 1
+squirrels_wide[squirrels_wide == "false" ] <- 0
+
+# Create a tidier dataframe of squirrels and their actions
+squirrel_actions <- squirrels_wide %>%
+  pivot_longer(c(`Running`, `Chasing`, `Climbing`, `Eating`, `Foraging`), names_to = "actions", values_to = "num_squirrels") %>%
+  filter(num_squirrels >0) %>%
+  select(id, actions)
+
+# Drop action columns for Squirrels dataframe to just have demographic data
+squirrels_wide <- squirrels_wide %>%
+  select(id, hectare, age, primary_color, highlight_color, location)
+
+# Write to CSV
+write.csv(squirrels_wide,'squirrels_data.csv',row.names = TRUE)
+```
+
+First let's look at the distribution of different squirrel features: 
+
+```{r squirrel_demos}
+ggplot(data = squirrels_wide, aes(x = age)) +
+  geom_bar(aes(color=primary_color)) 
+
+ggplot(data = squirrels_wide, aes(x = location)) +
+    geom_bar(aes(color=primary_color)) 
+
+ggplot(data = squirrels_wide, aes(x = primary_color)) +
+  geom_bar(aes(color=highlight_color)) 
+```
+We can also summarize those with group bys, learning that most observed squirrels are Adults, with the most common primary color being Gray and most common highlight Cinnamon. Most squirrels were observed on a Ground Plane.
+
+``` {r analysis}
+squirrels_wide %>%
+  group_by(age) %>%
+  summarize(n_squirrels = n())
+
+squirrels_wide %>%
+  group_by(location) %>%
+  summarize(n_squirrels = n())
+
+squirrels_wide %>%
+  group_by(primary_color) %>%
+  summarize(n_squirrels = n())
+
+squirrels_wide %>%
+  group_by(highlight_color) %>%
+  summarize(n_squirrels = n())
+```
+
+We can do the same thing easily on our tidier actions dataset, finding that the most common action is Foraging! 
+
+``` {r squirrel-actionsanalysis}
+squirrel_actions %>%
+  group_by(actions) %>%
+  summarize(n_squirrels = n())
+
+ggplot(data = squirrel_actions, aes(x = actions)) +
+  geom_bar()
+```
+
+## NYC Sanitation 
+
+Richard Zheng shared this:
+
+> One way you could work with this type of data is to transform it to a familiar tabular structure first using relevant key values. However you could also conduct analysis keeping the data's format then dumping the results into a tidy, tabular, structure 
+
+There wasn't an explicit analysis question, but I explored my own: for those with violations, how many are critical, and does that differ by establishment type?
+
+*Citation:* State of New York, health.data.ny.gov/resource/cnih-y5dw.json. 
+
+```{r sanitation}
+# https://stackoverflow.com/questions/2061897/parse-json-with-r
+url <- 'https://health.data.ny.gov/resource/cnih-y5dw.json'
+
+# read url and convert to data.frame
+sanitation <- fromJSON(txt=url)
+```
+
+First, we'll familiarize with the data and begin tidying. There are a lot of computed columns we don't want, so we'll select that which we do and tidy from there.
+
+```{r sanitation-tidying}
+head(sanitation)
+
+sanitation_wide <- sanitation %>%
+  select(nys_health_operation_id, facility, date, city, description, inspection_type, total_noncritical_violations, total_crit_not_corrected, total_critical_violations)
+
+# Let's make our violations numeric
+sanitation_wide$total_noncritical_violations <- as.numeric(sanitation_wide$total_noncritical_violations)
+sanitation_wide$total_crit_not_corrected <- as.numeric(sanitation_wide$total_crit_not_corrected)
+sanitation_wide$total_critical_violations <- as.numeric(sanitation_wide$total_critical_violations)
+
+# Write to CSV
+write.csv(sanitation_wide,'sanitation_wide',row.names = TRUE)
+
+# We can pivot into a longer format, breaking violations into type and summing from there
+sanitation_long <- sanitation_wide %>%
+  pivot_longer(c(`total_critical_violations`,`total_crit_not_corrected`,`total_noncritical_violations`), names_to = 'violation_type', values_to = 'num_violations')
+
+# But I'm going we can break violation types into their own table, and sum the total here: 
+sanitation_all <- sanitation_wide %>%
+  mutate(total_violations = rowSums(cbind(total_critical_violations,total_crit_not_corrected,total_noncritical_violations)))
+
+# I'm also going to filter for those with violations in a separate dataframe: 
+sanitation_violations <- sanitation_all %>%
+  filter(total_violations > 0)
+```
+My primary analysis question is how often are the violations in this data critical, and how does that differ by type of establishment. 
+
+```{r analysis}
+critical_violation_rate <- sanitation_violations %>%
+  mutate(critical_rate = total_critical_violations/total_violations)
+```
+
+Looking at the distribution by type of establishment, we see very different counts and little activity (many at 0) for several types. 
+
+```{r hist}
+ggplot(data = critical_violation_rate, aes(x = critical_rate)) +
+  geom_histogram() + 
+  facet_wrap(~description)
+```
+To get a clearer picture of overall critical rates, let's group by Type and summarize. 
+
+We find that the largest rate of critical violations comes from *SED Summer Feeding Prog. - SED Self Preparation Feeding Site*, at 43% of their violations. These are only 7 violations from 2 establishments, though.
+
+```{r groupby-sanitation}
+description_summary <-critical_violation_rate %>%
+  group_by(description) %>%
+  summarize(n_establishments = n(), critical_rate =  sum(total_critical_violations)/sum(total_violations), total_violations = sum(total_violations))
+
+print(description_summary)
+summary(description_summary)
+```
+
+Finally, let's confirm the number of violations increases with the number of establishments in each type, to see if there are any over-contributors or under-contributors: 
+
+```{r scatter-sanitation}
+ggplot(data=description_summary,aes(total_violations,n_establishments)) + geom_point(aes(color=critical_rate))
+```
+There are a couple of large values making it a challenge to see, so we can quickly filter those out and look at the smaller values: 
+
+```{r scatter-sanitation-smaller}
+smaller_summary <- description_summary %>%
+  filter(n_establishments < 50)
+
+ggplot(data=smaller_summary,aes(total_violations,n_establishments)) + geom_point(aes(color=critical_rate))
+```
+This plot suggests it is roughly true - as there are more establishments in each description type, there are more total violations. 
+
+## Conclusions
+
+Through analysis we discovered: 
+- There is possibly some recency bias in IMDB's top film rankings (or films are getting better with time).
+- Squirrels in Central Park are most often Gray in coloring, and Adults. They're most often observed Foraging. 
+- Self Preparation Feeding Sites have the highest rate of critical violations among inspected Restaurants businesses. 
+- The number of violations for a type of Restaurant establishment appears to increase with the number establishments of that type. There were not glaringly obvious establishment types with disproportionate violation numbers.
